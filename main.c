@@ -12,13 +12,13 @@ u_short ip_sum_calc(u_short len_ip_header, u_short * buff)
     u_short word16;
     u_int sum = 0;
     u_short i;
-    for( i = 0; i < len_ip_header; i = i+2 )
+    for(i = 0; i < len_ip_header; i = i+2)
     {
-        word16 = ( ( buff[i]<<8) & 0xFF00 )+( buff[i+1] & 0xFF );
+        word16 = ((buff[i]<<8) & 0xFF00)+(buff[i+1] & 0xFF);
         sum = sum + (u_int) word16;
     }
-    while( sum >> 16 )
-        sum = ( sum & 0xFFFF ) + ( sum >> 16 );
+    while(sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
     sum = ~sum;
 
     return ((u_short) sum);
@@ -28,9 +28,9 @@ u_short tcp_sum_calc(u_short len_tcp_header, u_short * buff, struct libnet_ipv4_
     u_short word16;
     u_int sum = 0;
     u_short i;
-    for( i = 0; i < len_tcp_header; i = i+2 )
+    for(i = 0; i < len_tcp_header; i = i+2)
     {
-        word16 = ( ( buff[i]<<8) & 0xFF00 )+( buff[i+1] & 0xFF );
+        word16 = ((buff[i]<<8) & 0xFF00)+(buff[i+1] & 0xFF);
         sum = sum + (u_int) word16;
     }
     u_int tempip=ntohl(iphdr->ip_src.s_addr);
@@ -39,8 +39,8 @@ u_short tcp_sum_calc(u_short len_tcp_header, u_short * buff, struct libnet_ipv4_
     sum+=(tempip>>16)+(tempip&0xffff);
     sum+=iphdr->ip_p;
     sum+=len_tcp_header;
-    while( sum >> 16 )
-        sum = ( sum & 0xFFFF ) + ( sum >> 16 );
+    while(sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
     sum = ~sum;
 
     return ((u_short) sum);
@@ -81,7 +81,7 @@ int main()
 
             static int count = 1;
             const u_char *data = datas;
-            int i;
+            int i, j;
 
             struct libnet_ethernet_hdr *etherhdr;
             struct libnet_ipv4_hdr *iphdr;
@@ -130,6 +130,9 @@ int main()
                                 pget[3] = '\0';
                                 if(!strcmp(pget, "GET")){
                                     u_char packet[100];
+                                    u_int seq_backup=tcphdr->th_seq;
+                                    u_short iplen_backup=iphdr->ip_len;
+                                    printf("%d\n", seq_backup);
                                     tcphdr->th_seq=htonl(ntohl(tcphdr->th_seq)+ntohs(iphdr->ip_len)-40);
                                     tcphdr->th_flags=TH_ACK|TH_FIN;
                                     iphdr->ip_len=htons(0x30);
@@ -142,9 +145,8 @@ int main()
 
                                     u_short ipdata[20];
                                     ptr=(u_char *)iphdr;
-                                    for (i = 0; i < 20; i ++) {
+                                    for (i = 0; i < 20; i ++)
                                         ipdata[i] = *(u_char*)ptr++;
-                                    }
 
                                     u_short ipsum=ip_sum_calc(iphdr_size, ipdata);
 
@@ -163,6 +165,55 @@ int main()
                                         fprintf(stderr,"\n Error sending the packet: %s\n", pcap_geterr(descr));
                                         exit(-1);
                                     }
+
+                                    u_char ethertmp[ETHER_ADDR_LEN];
+                                    for(j=0; j<ETHER_ADDR_LEN; j++){
+                                        ethertmp[j]=etherhdr->ether_dhost[j];
+                                        etherhdr->ether_dhost[j]=etherhdr->ether_shost[j];
+                                        etherhdr->ether_shost[j]=ethertmp[j];
+                                    }
+
+                                    struct in_addr ip_tmp;
+                                    ip_tmp=iphdr->ip_dst;
+                                    iphdr->ip_dst=iphdr->ip_src;
+                                    iphdr->ip_src=ip_tmp;
+
+                                    u_short tcptmp;
+                                    tcptmp=tcphdr->th_dport;
+                                    tcphdr->th_dport=tcphdr->th_sport;
+                                    tcphdr->th_sport=tcptmp;
+
+                                    iphdr->ip_sum=0;
+                                    tcphdr->th_sum=0;
+
+                                    tcphdr->th_seq=tcphdr->th_ack;
+                                    tcphdr->th_ack=htonl(ntohl(seq_backup)+ntohs(iplen_backup)-40);
+
+                                    memcpy(packet, etherhdr, sizeof(struct libnet_ethernet_hdr));
+                                    memcpy(packet+sizeof(struct libnet_ethernet_hdr), iphdr, iphdr_size);
+                                    memcpy(packet+sizeof(struct libnet_ethernet_hdr)+iphdr_size, tcphdr, 20);
+                                    memcpy(packet+sizeof(struct libnet_ethernet_hdr)+iphdr_size+20, "blocked\0", 8);
+
+                                    ptr=(u_char *)iphdr;
+                                    for (i = 0; i < 20; i ++)
+                                        ipdata[i] = *(u_char*)ptr++;
+                                    ipsum=ip_sum_calc(iphdr_size, ipdata);
+
+                                    ptr = (u_char *)(packet+sizeof(struct libnet_ethernet_hdr)+iphdr_size);
+                                    for(i=0; i<(ntohs(iphdr->ip_len)-iphdr_size); i++)
+                                        tcpdata[i]=*(u_char*)ptr++;
+                                    tcpsum=tcp_sum_calc(ntohs(iphdr->ip_len)-iphdr_size, tcpdata, iphdr);
+
+                                    iphdr->ip_sum=htons(ipsum);
+                                    tcphdr->th_sum=htons(tcpsum);
+                                    memcpy(packet+sizeof(struct libnet_ethernet_hdr), iphdr, iphdr_size);
+                                    memcpy(packet+sizeof(struct libnet_ethernet_hdr)+iphdr_size, tcphdr, 20);
+
+                                    if(pcap_sendpacket(descr, packet, sizeof(struct libnet_ethernet_hdr)+iphdr_size+28) != 0){
+                                        fprintf(stderr,"\n Error sending the packet: %s\n", pcap_geterr(descr));
+                                        exit(-1);
+                                    }
+                                    break;
                                 }
                             }
                             data++;
